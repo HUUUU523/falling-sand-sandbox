@@ -1,5 +1,6 @@
 #pragma once
 #include "simulation.h"
+#include <string>
 
 // 控制台渲染器：负责初始化终端、渲染网格与 UI、处理键盘输入
 class Renderer {
@@ -24,11 +25,11 @@ public:
     int brushY() const { return brushY_; }
 
 private:
-    // 渲染一行网格（合并连续相同颜色以减少输出量）
-    void renderGridRow(const Grid& grid, int y);
+    // 将一行网格追加到缓冲区（合并连续相同颜色以减少输出量）
+    void appendGridRow(std::string& buf, const Grid& grid, int y);
 
-    // 渲染 UI 信息行
-    void renderUI(const Simulation& sim);
+    // 将 UI 信息行追加到缓冲区
+    void appendUI(std::string& buf, const Simulation& sim);
 
     // 处理单个按键
     bool handleKey(int key, Simulation& sim);

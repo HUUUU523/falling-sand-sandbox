@@ -64,7 +64,32 @@ void Renderer::shutdown() {
     initialized_ = false;
 }
 
-void Renderer::renderGridRow(const Grid& grid, int y) {
+// 计算 UTF-8 字符串的终端显示宽度（中文等 CJK 字符占 2 列，ASCII 占 1 列）
+static int utf8DisplayWidth(const char* s) {
+    int w = 0;
+    while (*s) {
+        unsigned char c = static_cast<unsigned char>(*s);
+        if (c < 0x80) {
+            w += 1; s += 1;
+        } else if (c < 0xE0) {
+            w += 1; s += 2;       // 2字节字符，宽度1
+        } else if (c < 0xF0) {
+            w += 2; s += 3;       // 3字节字符（中文等），宽度2
+        } else {
+            w += 2; s += 4;       // 4字节字符，估计宽度2
+        }
+    }
+    return w;
+}
+
+// 追加文本后用空格填充到目标显示宽度
+static void appendPadded(std::string& buf, const std::string& text, int targetWidth) {
+    buf += text;
+    int w = utf8DisplayWidth(text.c_str());
+    while (w < targetWidth) { buf += ' '; w++; }
+}
+
+void Renderer::appendGridRow(std::string& buf, const Grid& grid, int y) {
     int currentColor = -1;
 
     for (int x = 0; x < gridW_; x++) {
@@ -80,15 +105,17 @@ void Renderer::renderGridRow(const Grid& grid, int y) {
         }
 
         if (color != currentColor) {
-            std::cout << "\x1b[48;5;" << color << "m";
+            buf += "\x1b[48;5;";
+            buf += std::to_string(color);
+            buf += 'm';
             currentColor = color;
         }
-        std::cout << ' ';
+        buf += ' ';
     }
-    std::cout << "\x1b[0m\n";
+    buf += "\x1b[0m\n";
 }
 
-void Renderer::renderUI(const Simulation& sim) {
+void Renderer::appendUI(std::string& buf, const Simulation& sim) {
     // 统计主要粒子数量
     int sand  = sim.countParticle(Particle::Sand);
     int water = sim.countParticle(Particle::Water);
@@ -97,52 +124,56 @@ void Renderer::renderUI(const Simulation& sim) {
               + sim.countParticle(Particle::Oil) + sim.countParticle(Particle::Plant)
               + sim.countParticle(Particle::Lava);
 
-    std::cout << "\x1b[48;5;234m\x1b[38;5;250m"; // 深灰底 + 浅灰字
+    buf += "\x1b[48;5;234m\x1b[38;5;250m"; // 深灰底 + 浅灰字
 
-    // 第一行：状态信息
-    char line1[128];
-    std::snprintf(line1, sizeof(line1),
-        " 画笔:%-4s  半径:%d  %s  粒子总数:%-5d  沙:%-4d 水:%-4d 火:%-4d ",
-        particleName(sim.brush()), sim.brushRadius(),
-        sim.paused() ? "[暂停]" : "[运行]", total, sand, water, fire);
-    std::cout << line1;
-    // 填充剩余宽度
-    for (int i = static_cast<int>(std::strlen(line1)); i < gridW_; i++)
-        std::cout << ' ';
-    std::cout << '\n';
+    // 第一行：状态信息（手动拼接，避免 snprintf 对中文宽度的错误处理）
+    std::string line1 = " 画笔:";
+    line1 += particleName(sim.brush());
+    line1 += "  半径:" + std::to_string(sim.brushRadius());
+    line1 += "  ";
+    line1 += sim.paused() ? "[暂停]" : "[运行]";
+    line1 += "  粒子总数:" + std::to_string(total);
+    line1 += "  沙:" + std::to_string(sand);
+    line1 += " 水:" + std::to_string(water);
+    line1 += " 火:" + std::to_string(fire);
+    line1 += ' ';
+    appendPadded(buf, line1, gridW_);
+    buf += '\n';
 
     // 第二行：粒子选择快捷键
-    const char* line2 =
-        " [1]沙子 [2]水 [3]石头 [4]火 [5]油 [6]蒸汽 [7]植物 [8]熔岩 [0]擦除 ";
-    std::cout << line2;
-    for (int i = static_cast<int>(std::strlen(line2)); i < gridW_; i++)
-        std::cout << ' ';
-    std::cout << '\n';
+    appendPadded(buf,
+        " [1]沙子 [2]水 [3]石头 [4]火 [5]油 [6]蒸汽 [7]植物 [8]熔岩 [0]擦除 ",
+        gridW_);
+    buf += '\n';
 
     // 第三行：操作说明
-    const char* line3 =
-        " 方向键移动画笔  空格绘制  [/]调整笔刷  P暂停  C清空  R重置场景  ESC退出 ";
-    std::cout << line3;
-    for (int i = static_cast<int>(std::strlen(line3)); i < gridW_; i++)
-        std::cout << ' ';
-    std::cout << '\n';
+    appendPadded(buf,
+        " 方向键移动画笔  空格绘制  [/]调整笔刷  P暂停  C清空  R重置场景  ESC退出 ",
+        gridW_);
+    buf += '\n';
 
     // 第四行：分隔线
-    std::cout << "\x1b[48;5;237m";
-    for (int i = 0; i < gridW_; i++) std::cout << ' ';
-    std::cout << "\x1b[0m\n";
+    buf += "\x1b[48;5;237m";
+    buf.append(gridW_, ' ');
+    buf += "\x1b[0m\n";
 }
 
 void Renderer::render(const Simulation& sim) {
-    // 光标移到左上角，逐行重绘
-    std::cout << "\x1b[H";
+    // 整帧缓冲：先把所有内容拼接到一个字符串，再一次性输出
+    // 这样终端只做一次大块写入，避免逐行刷新时的中间态撕裂
+    std::string frame;
+    frame.reserve(static_cast<size_t>(gridW_) * (gridH_ + UI_ROWS) * 2 + 512);
+
+    frame += "\x1b[H"; // 光标归位到左上角，覆盖重绘（不清屏，减少闪烁）
 
     const Grid& g = sim.grid();
     for (int y = 0; y < gridH_; y++) {
-        renderGridRow(g, y);
+        appendGridRow(frame, g, y);
     }
 
-    renderUI(sim);
+    appendUI(frame, sim);
+
+    std::cout << frame;
     std::cout.flush();
 }
 

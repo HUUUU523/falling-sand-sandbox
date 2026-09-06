@@ -1,0 +1,10 @@
+# 编译产物
+*.exe
+*.o
+*.obj
+*.dll
+
+# IDE / 编辑器
+.vscode/
+.vs/
+*.user
